@@ -40,6 +40,7 @@ defmodule TornexProxy.QueryController do
         _ ->
           false
       end) || Map.get(params, "key")
+
     # TODO: Raise an error if not set
 
     key_owner =
@@ -96,7 +97,7 @@ defmodule TornexProxy.QueryController do
       end)
       |> Enum.into([], fn {k, v} -> {String.to_atom(k), v} end)
 
-    response = 
+    response =
       %Tornex.Query{
         key: key,
         key_owner: key_owner |> maybe_to_integer(),
@@ -111,13 +112,61 @@ defmodule TornexProxy.QueryController do
         params: query_params
       }
       |> IO.inspect()
-      |> Tornex.Scheduler.Bucket.enqueue()
+      |> Tornex.Scheduler.Bucket.enqueue(timeout: :infinity)
+
+    # TODO: Add config for timeout
 
     json(conn, response)
   end
 
   def get_spec_query(conn, %{"path" => path_segments} = params) do
-    path = Enum.join(path_segments, "/")
+    full_path = Enum.join(path_segments, "/") |> IO.inspect(label: "Path")
+
+    {path, selections} =
+      Torngen.Client.Path.path_selection(full_path) |> IO.inspect(label: "path parts")
+
+    selections =
+      if is_nil(selections) do
+        params
+        |> Map.get("selections", "")
+        |> String.split(",")
+      else
+        selections
+      end
+      |> IO.inspect()
+
+    path_modules =
+      :code.all_available()
+      |> Enum.map(fn {mod, _, _} -> mod |> to_string() end)
+      |> Enum.filter(fn mod -> mod |> String.starts_with?("Elixir.Torngen.Client.Path.") end)
+      |> Enum.map(fn mod -> mod |> String.to_atom() end)
+
+    :code.ensure_modules_loaded(path_modules)
+
+    path_modules =
+      Enum.filter(path_modules, fn mod ->
+        function_exported?(mod, :path, 0) and
+          mod |> apply(:path_selection, []) |> elem(0) == path and
+          Enum.member?(selections, mod |> apply(:path_selection, []) |> elem(1))
+      end)
+      |> IO.inspect()
+
+    case path_modules do
+      [] ->
+        # Invalid path
+        nil
+
+      _ when is_list(path_modules) ->
+        IO.inspect(path_modules, label: "Query modules")
+
+        query =
+          Enum.reduce(path_modules, Tornex.SpecQuery.new(), fn mod, query ->
+            Tornex.SpecQuery.put_path(query, mod)
+          end)
+          |> IO.inspect()
+
+        nil
+    end
 
     json(conn, %{})
   end
