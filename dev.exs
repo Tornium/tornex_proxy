@@ -55,6 +55,7 @@ Tornex.Telemetry.attach_default_logger()
     [
       {TornexProxyDev.Endpoint, render_errors: [formats: [json: TornexProxyDev.ErrorJSON]]},
       Tornex.Scheduler.Supervisor,
+      Tornex.NodeRatelimiter,
       Tornex.HTTP.FinchClient
     ],
     strategy: :one_for_one

@@ -21,9 +21,10 @@ defmodule TornexProxy.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:torngen_elixir_client, ">= 1.0.0"},
-      {:tornex, "~> 0.4.0"},
+      {:torngen_elixir_client, ">= 5.0.0"},
+      {:tornex, "~> 0.5.0"},
       {:phoenix, "~> 1.7"},
+      {:jason, "~> 1.4"},
       {:finch, "~> 0.20", only: :dev},
       {:bandit, "~> 1.8", only: :dev}
     ]

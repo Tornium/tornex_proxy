@@ -17,6 +17,8 @@ defmodule TornexProxy.Router do
   
   """
 
+  # TODO: Add a moduledoc
+
   defmacro tornex_proxy(path, opts \\ []) do
     quote bind_quoted: binding() do
       import Phoenix.Router
