@@ -15,13 +15,12 @@
 defmodule TornexProxy.QueryController do
   use Phoenix.Controller
   import Plug.Conn
+  require Logger
 
   @path_modules :code.all_available()
-                |> Enum.map(fn {mod, _, _} -> mod |> to_string() end)
-                |> Enum.filter(fn mod ->
-                  mod |> String.starts_with?("Elixir.Torngen.Client.Path.")
-                end)
-                |> Enum.map(fn mod -> mod |> String.to_atom() end)
+                |> Enum.map(fn {mod, _, _} -> to_string(mod) end)
+                |> Enum.filter(&String.starts_with?(&1, "Elixir.Torngen.Client.Path"))
+                |> Enum.map(&String.to_atom/1)
   :code.ensure_modules_loaded(@path_modules)
 
   @timeout Application.compile_env(:tornex_proxy, :timeout, :infinity)
@@ -29,6 +28,10 @@ defmodule TornexProxy.QueryController do
   @spec maybe_to_integer(string :: String.t() | nil) :: integer() | String.t()
   defp maybe_to_integer(string) when is_nil(string) do
     nil
+  end
+
+  defp maybe_to_integer(value) when is_integer(value) do
+    value
   end
 
   defp maybe_to_integer(string) do
@@ -40,49 +43,58 @@ defmodule TornexProxy.QueryController do
     end
   end
 
-  defp key(headers, %{} = params) when is_list(headers) do
-    Enum.find(headers, fn
-      {"Authorization", "ApiKey " <> api_key} when is_binary(api_key) ->
-        true
+  @spec key!(conn :: Plug.Conn.t(), params :: map()) :: String.t() | nil
+  defp key!(%Plug.Conn{} = conn, %{} = params) do
+    case get_req_header(conn, "authorization") do
+      [<<"ApiKey ", api_key::binary-size(16)>>] ->
+        api_key
 
-      _ ->
-        false
-    end) || Map.get(params, "key")
+      [] ->
+        Map.get(params, "key", nil)
+
+      api_key -> 
+        Logger.warning("Invalid API key shape: #{inspect(api_key)}")
+        Map.get(params, "key", nil)
+    end
   end
 
-  defp key_owner(headers, %{} = params) when is_list(headers) do
-    Enum.find(headers, fn
-      {"User-ID", user_id} when is_binary(user_id) ->
-        true
+  @spec key_owner!(conn :: Plug.Conn.t(), params :: map()) :: pos_integer()
+  defp key_owner!(%Plug.Conn{} = conn, %{} = params) do
+    case {get_req_header(conn, "user-id"), get_req_header(conn, "x-user-id")} do
+      {[user_id], _} when is_binary(user_id) ->
+        maybe_to_integer(user_id)
 
-      {"X-User-ID", user_id} when is_binary(user_id) ->
-        true
+      {_, [user_id]} when is_binary(user_id) ->
+        maybe_to_integer(user_id)
 
-      _ ->
-        false
-    end) || Map.get(params, "user_id") || 0
+      {[], []} ->
+        params
+        |> Map.get("user_id", 0)
+        |> maybe_to_integer()
+    end
   end
 
-  defp nice(headers, %{} = params) when is_list(headers) do
-    Enum.find(headers, fn
-      {"Nice", user_id} when is_binary(user_id) ->
-        true
+  @spec nice!(conn :: Plug.Conn.t(), params :: map()) :: -20..20
+  defp nice!(%Plug.Conn{} = conn, %{} = params) do
+    case {get_req_header(conn, "nice"), get_req_header(conn, "x-nice")} do
+      {[niceness], _} ->
+        maybe_to_integer(niceness)
 
-      {"X-Nice", user_id} when is_binary(user_id) ->
-        true
+      {_, [niceness]} ->
+        maybe_to_integer(niceness)
 
-      _ ->
-        false
-    end) || Map.get(params, "nice") || 0
+      {[],[]} ->
+        Map.get(params, "nice", 0)
+    end
   end
 
-  def get_query(%Plug.Conn{req_headers: headers} = conn, %{"resource" => resource} = params)
+  def get_query(%Plug.Conn{} = conn, %{"resource" => resource} = params)
       when is_binary(resource) do
-    query_key = key(headers, params)
+    query_key = key!(conn, params)
     # TODO: Raise an error if key not set
 
-    query_key_owner = key_owner(headers, params)
-    query_nice = nice(headers, params)
+    query_key_owner = key_owner!(conn, params)
+    query_nice = nice!(conn, params)
     resource_id = Map.get(params, "resource_id")
 
     selections =
@@ -127,21 +139,19 @@ defmodule TornexProxy.QueryController do
         sort: Map.get(params, "sort", nil),
         params: query_params
       }
-      |> IO.inspect()
       |> Tornex.Scheduler.Bucket.enqueue(timeout: @timeout)
 
     json(conn, response)
   end
 
-  def get_spec_query(%Plug.Conn{req_headers: headers} = conn, %{"path" => path_segments} = params) do
-    full_path = Enum.join(path_segments, "/") |> IO.inspect(label: "Path")
+  def get_spec_query(%Plug.Conn{} = conn, %{"path" => path_segments} = params) do
+    full_path = Enum.join(path_segments, "/")
 
-    query_key = key(headers, params)
-    query_key_owner = key_owner(headers, params)
-    query_nice = nice(headers, params)
+    query_key = key!(conn, params)
+    query_key_owner = key_owner!(conn, params)
+    query_nice = nice!(conn, params)
 
-    {path, selections} =
-      Torngen.Client.Path.path_selection(full_path) |> IO.inspect(label: "path parts")
+    {path, selections} = Torngen.Client.Path.path_selection(full_path)
 
     selections =
       if is_nil(selections) do
@@ -151,7 +161,6 @@ defmodule TornexProxy.QueryController do
       else
         [selections]
       end
-      |> IO.inspect()
 
     path_modules =
       Enum.filter(@path_modules, fn mod ->
@@ -159,7 +168,6 @@ defmodule TornexProxy.QueryController do
           mod |> apply(:path_selection, []) |> elem(0) == path and
           Enum.member?(selections, mod |> apply(:path_selection, []) |> elem(1))
       end)
-      |> IO.inspect()
 
     response =
       cond do
@@ -183,7 +191,6 @@ defmodule TornexProxy.QueryController do
           |> Enum.reduce(Tornex.SpecQuery.new(opts), fn mod, query ->
             Tornex.SpecQuery.put_path(query, mod)
           end)
-          |> IO.inspect()
           |> Tornex.Scheduler.Bucket.enqueue(timeout: @timeout)
       end
 
